@@ -1,0 +1,338 @@
+<!doctype html>
+<html>
+  <head>  
+    <meta charset="utf-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <title>PID-Analyzer</title>
+    <meta name="description" content="">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+  	<script src="js/lodash.js"></script>
+	<script src="js/jquery-1.11.3.min.js"></script>
+	<script src="js/tools.js"></script>
+	<script src="js/imu.js"></script>
+	<script src="js/semver.js"></script>
+	<script src="js/cache.js"></script>
+	<script src="js/datastream.js"></script>
+	<script src="js/decoders.js"></script>
+    <script src="js/flightlog_fielddefs.js"></script>
+    <script src="js/flightlog_fields_presenter.js"></script>
+    <script src="js/flightlog_parser.js"></script>
+    <script src="js/flightlog_index.js"></script>
+    <script src="js/flightlog.js"></script>
+    <script src="js/csv-exporter.js"></script>
+	<script src="main.py.js"></script>	
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+	<!--script src="pyodide-0.26.2/pyodide.js"></script-->
+  </head>
+
+  <body>
+    <textarea id="code" style="width: 100%; display:none;" rows="36" ></textarea>
+    <button style="display:none;" onclick="evaluatePython()">Run</button>
+    <div>Log:</div>
+    <textarea id="output" style="width: 100%; " rows="10" disabled></textarea>
+
+    <script>
+      const output = document.getElementById("output");
+      const code = document.getElementById("code");
+
+      function addToOutput(s) {
+        output.value += ">>>" + code.value + "\n" + s + "\n";
+      }
+	  output.value += "https://github.com/kikoqiu/jsPIDAna \n";
+      output.value += "Initializing...\n";
+
+
+	/**
+	 * Mount a folder from your native filesystem as the directory
+	 * `pyodideDirectory`. If `directoryKey` was used previously, then it will reuse
+	 * the same folder as last time. Otherwise, it will show a directory picker.
+	 */
+	async function mountDirectory(pyodide, pyodideDirectory, directoryKey) {
+		const { get, set } = await import(
+		  "https://unpkg.com/idb-keyval@5.0.2/dist/esm/index.js"
+		);
+
+
+	  let directoryHandle = await get(directoryKey);
+	  const opts = {
+		id: "mountdirid",
+		mode: "readwrite",
+	  };
+	  if (!directoryHandle) {
+		directoryHandle = await showDirectoryPicker(opts);
+		await set(directoryKey, directoryHandle);
+	  }
+	  const permissionStatus = await directoryHandle.requestPermission(opts);
+	  if (permissionStatus !== "granted") {
+		throw new Error("readwrite access to directory not granted");
+	  }
+	  const { syncfs } = await pyodide.mountNativeFS(
+		pyodideDirectory,
+		directoryHandle,
+	  );
+	  return syncfs;
+	}
+	
+	class Stdout {
+	  constructor() {
+		this.isatty = false;
+	  }
+
+	  write(buffer) {
+		output.value += String.fromCharCode.apply(null, new Uint8Array(buffer));
+		return buffer.length;
+	  }
+	}
+
+      // init Pyodide
+      async function main() {		
+        let pyodide = await loadPyodide();		
+		output.value += "loading libs!\n";
+		let ps=['numpy','pandas','matplotlib','scipy','six'];
+		for(let i in ps){
+		 output.value += `loading ${ps[i]}!\n`;
+			await pyodide.loadPackage(ps[i]);
+		}
+        output.value += "init scripts, window will freeze!\n";	
+		pyodide.setStdout(new Stdout());
+		
+		await pyodide.runPython(initpython);		
+		output.value += "Ready!\n";
+
+        return pyodide;
+      }
+	  
+	  
+      let pyodideReadyPromise = main();
+
+      /*async function evaluatePython() {
+	    let pyodide = await pyodideReadyPromise;		
+		try{
+			//await mountDirectory(pyodide,"/mount","mount");
+		}catch(e){
+			console.log(e);
+		}
+        try {
+          let output = pyodide.runPython(code.value);
+          addToOutput(output);
+        } catch (err) {
+          addToOutput(err);
+        }
+      }*/
+
+	  async function evaluatePython(pheaders,pcsv) {
+	    let pyodide = await pyodideReadyPromise;
+		
+		pyodide.globals.set("pheaders", pheaders);
+		pyodide.globals.set("pcsv", pcsv);
+		try{
+			//await mountDirectory(pyodide,"/mount","mount");
+		}catch(e){
+			console.log(e);
+		}
+        try {
+		  output.value += ("Generating. window will freeze. Please wait.\n");
+		  let pys='dowork()';//code.value
+          let rst = pyodide.runPython(pys);
+		  console.log(rst);
+          //addToOutput(rst);
+		  output.value += ("Done.\n");
+        } catch (err) {
+          output.value += (err);
+        }
+      }
+	  
+	  
+	  
+    </script>
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	<script>
+let flightLog=null;
+
+function loadLogFile(file) {
+		return new Promise((resolve, reject) => {
+			
+			var reader = new FileReader();
+    
+			reader.onload = function(e) {
+				var bytes = e.target.result;
+				
+				var fileContents = String.fromCharCode.apply(null, new Uint8Array(bytes, 0,100));
+
+				if(fileContents.match(/# dump|# diff/i)) { // this is actually a configuration file
+					try{
+
+					   // Firstly, is this a configuration defaults file
+					   // (the filename contains the word 'default')
+
+					   if( (file.name).match(/default/i) ) {
+							configurationDefaults.loadFile(file);
+					   } else {
+
+						   configuration = new Configuration(file, configurationDefaults, showConfigFile); // the configuration class will actually re-open the file as a text object.
+						   hasConfig = true;
+						   html.toggleClass("has-config", hasConfig);
+					   }
+					   
+					   } catch(e) {
+						   configuration = null;
+						   hasConfig = false;
+					   }
+				   return;            
+				}
+
+				flightLogDataArray = new Uint8Array(bytes);
+				
+				try {
+					flightLog = new FlightLog(flightLogDataArray);
+					resolve(flightLog);
+				} catch (err) {
+					alert("Sorry, an error occurred while trying to open this log:\n\n" + err);
+					//return;
+					reject(e);
+				}
+				
+				/*renderLogFileInfo(file);
+				renderSeekBarPicker();
+				currentOffsetCache.log      = file.name; // store the name of the loaded log file
+				currentOffsetCache.index    = null;      // and clear the index
+				
+				hasLog = true; html.toggleClass("has-log", hasLog);
+				html.toggleClass("has-table", hasTable);
+				html.toggleClass("has-craft",              userSettings.drawCraft);
+				html.toggleClass("has-sticks",             userSettings.drawSticks);
+				html.toggleClass('has-expo-override',      userSettings.graphExpoOverride);
+				html.toggleClass('has-smoothing-override', userSettings.graphSmoothOverride);
+				html.toggleClass('has-grid-override',      userSettings.graphSmoothOverride);
+
+				setTimeout(function(){$(window).resize();}, 500 ); // refresh the window size;
+
+				selectLog(null);
+				
+				if (graph) {
+					(hasAnalyserFullscreen)?html.addClass("has-analyser-fullscreen"):html.removeClass("has-analyser-fullscreen");
+					graph.setAnalyser(hasAnalyserFullscreen);
+				}*/
+				
+
+			};
+			reader.loadend  = function() {
+				if(reader.error){
+					console.log(reader.error);
+					reject(reader.error);
+				}
+			}
+		
+			reader.readAsArrayBuffer(file);
+			
+			
+			
+		});
+    }
+	async function doCsv(){
+		console.log(flightLog);
+		[pheader,pcsv]=gencsv1(flightLog,{});
+		console.log(pheader);
+		console.log(pcsv);
+		await evaluatePython(pheader,pcsv)
+	}
+	
+	
+	function dowork(){
+		if(!flightLog){
+			return;
+		}
+		let index=parseInt($('#logSelect').val());
+		if(isNaN(index)){
+			index=0;
+		}
+		try {		
+			flightLog.openLog(index);
+			doCsv();
+		} catch (err) {
+			alert("Sorry, an error occurred while trying to open this log:\n\n" + err);
+			//return;
+			throw e;
+		}
+	}
+	
+	/*function createExportCallback(fileExtension, fileType, file,) {
+        const callback = function(data) {
+            if (!data) {
+                console.debug("Empty data, nothing to save");
+                return;
+            }
+            let blob = new Blob([data], {type: fileType}),
+                e    = document.createEvent('MouseEvents'),
+                a    = document.createElement('a');
+            a.download =  "log." + fileExtension;
+            a.href = window.URL.createObjectURL(blob);
+            a.dataset.downloadurl =  [fileType, a.download, a.href].join(':');
+            e.initMouseEvent('click', true, false, window, 0, 0, 0, 0, 0, false, false, false, false, 0, null);
+            a.dispatchEvent(e);
+          };
+          return callback;
+    }
+
+    function exportCsv(options={}) {
+        const onSuccess = createExportCallback('csv', 'text/csv');
+        CsvExporter(flightLog, options).dump(onSuccess);
+		
+    }*/
+	
+	
+	
+	function genSelect(count) {
+		var $select = $('#logSelect'); 
+		$select.children().remove();
+		
+		for(var i = 0; i < count; i++) {
+			var $option = $('<option></option>').text(i).val(i);
+			$select.append($option);
+		}
+		if(count>0){
+			$('#logSelect').removeAttr("disabled");
+			$('#genbtn').removeAttr("disabled");
+		}else{
+			$('#logSelect').attr("disabled","disabled");
+			$('#genbtn').attr("disabled","disabled");
+		}
+	}
+	
+	$(function(){
+		$('#file1').change(async function(event) {
+			flightLog=null;
+			if($('#file1')[0].files.length>0){
+				await loadLogFile($('#file1')[0].files[0]);
+			}
+			if(flightLog){
+				genSelect(flightLog.getLogCount());
+			}else{
+				genSelect(0);
+			}
+		});
+	});
+	
+	
+	</script>
+	<input type="file" id="file1"></input>
+	<select id="logSelect" disabled></select>
+	<button onclick="dowork()" disabled id="genbtn">Gen</button>
+  </body>
+</html>
