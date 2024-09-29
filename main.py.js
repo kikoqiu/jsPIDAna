@@ -52,7 +52,8 @@ class Trace:
         self.input = self.data['input']
         #enable this to generate artifical gyro trace with known system response
         #self.data['gyro']=self.toy_out(self.input, delay=0.01, mode='normal')####
-
+    
+    def init_resp(self):
         self.gyro = self.data['gyro']
         self.throttle = self.data['throttle']
         self.throt_hist, self.throt_scale = np.histogram(self.throttle, np.linspace(0, 100, 101, dtype=np.float64), density=True)
@@ -76,7 +77,16 @@ class Trace:
         self.resp_low = self.weighted_mode_avr(self.spec_sm, self.low_mask*self.toolow_mask, [-1.5,3.5], 1000)
         if self.high_mask.sum()>0:
             self.resp_high = self.weighted_mode_avr(self.spec_sm, self.high_mask*self.toolow_mask, [-1.5,3.5], 1000)
-
+    
+    def clean_resp(self):
+        del self.stacks
+        del self.spec_sm, self.avr_t, self.avr_in, self.max_in, self.max_thr
+        del self.low_mask, self.high_mask, self.toolow_mask
+        del self.resp_sm, self.resp_quality, self.thr_response,self.resp_low
+        if hasattr(self,"resp_high"):
+            del self.resp_high 
+        
+    def init_noise(self):    
         self.noise_winlen = self.stepcalc(self.time, Trace.noise_framelen)
         self.noise_stack = self.winstacker({'time':[], 'gyro':[], 'throttle':[], 'd_err':[], 'debug':[]},
                                            self.noise_winlen, Trace.noise_superpos)
@@ -93,6 +103,10 @@ class Trace:
         else:
             self.filter_trans = self.noise_gyro['hist2d'].mean(axis=1)*0.
 
+    def clean_noise(self):
+        del self.noise_gyro,self.noise_d,self.noise_debug,self.filter_trans
+        
+        
     @staticmethod
     def low_high_mask(signal, threshold):
         low = np.copy(signal)
@@ -210,19 +224,29 @@ class Trace:
             stackdict[k]=np.array(stackdict[k], dtype=np.float64)
         return stackdict
 
-    def wiener_deconvolution(self, input, output, cutfreq):      # input/output are two-dimensional
-        pad = 1024 - (len(input[0]) % 1024)                     # padding to power of 2, increases transform speed
-        input = np.pad(input, [[0,0],[0,pad]], mode='constant')
-        output = np.pad(output, [[0, 0], [0, pad]], mode='constant')
-        H = np.fft.fft(input, axis=-1)
-        G = np.fft.fft(output,axis=-1)
-        freq = np.abs(np.fft.fftfreq(len(input[0]), self.dt))
-        sn = self.to_mask(np.clip(np.abs(freq), cutfreq-1e-9, cutfreq))
-        len_lpf=np.sum(np.ones_like(sn)-sn)
-        sn=self.to_mask(gaussian_filter1d(sn,len_lpf/6.))
-        sn= 10.*(-sn+1.+1e-9)       # +1e-9 to prohibit 0/0 situations
-        Hcon = np.conj(H)
-        deconvolved_sm = np.real(np.fft.ifft(G * Hcon / (H * Hcon + 1./sn),axis=-1))
+    def wiener_deconvolution(self, input0, output0, cutfreq):      # input/output are two-dimensional
+        pad = 1024 - (len(input0[0]) % 1024)                     # padding to power of 2, increases transform speed
+        input0 = np.pad(input0, [[0,0],[0,pad]], mode='constant')
+        output0 = np.pad(output0, [[0, 0], [0, pad]], mode='constant')
+        deconvolved_sm = np.zeros(input0.shape, dtype=np.float64)
+        
+        for i in range(0,input0.shape[0]):
+            input = input0[i]
+            output = output0[i]
+            
+            H = np.fft.fft(input, axis=-1)
+            G = np.fft.fft(output,axis=-1)
+            freq = np.abs(np.fft.fftfreq(len(input), self.dt))
+            sn = self.to_mask(np.clip(np.abs(freq), cutfreq-1e-9, cutfreq))
+            len_lpf=np.sum(np.ones_like(sn)-sn)
+            sn=self.to_mask(gaussian_filter1d(sn,len_lpf/6.))
+            sn= 10.*(-sn+1.+1e-9)       # +1e-9 to prohibit 0/0 situations
+            Hcon = np.conj(H)
+            tmp = G * Hcon / (H * Hcon + 1./sn)
+            del H,G,input,output,freq,sn,len_lpf,Hcon
+            tmp = np.fft.ifft(tmp,axis=-1)
+            deconvolved_sm[i] = np.real(tmp)
+        
         return deconvolved_sm
 
     def stack_response(self, stacks, window):
@@ -244,8 +268,15 @@ class Trace:
         ### fouriertransform for noise analysis. returns frequencies and spectrum.
         pad = 1024 - (len(traces[0]) % 1024)  # padding to power of 2, increases transform speed
         traces = np.pad(traces, [[0, 0], [0, pad]], mode='constant')
-        trspec = np.fft.rfft(traces, axis=-1, norm='ortho')
+        
+        trspec = np.zeros((traces.shape[0],traces.shape[1]//2+1), dtype=np.float64)
+        #print(trspec.shape)
+        for i in range(0,traces.shape[0]):
+            trspec[i] = np.fft.rfft(traces[i], axis=-1, norm='ortho')
+            
         trfreq = np.fft.rfftfreq(len(traces[0]), time[1] - time[0])
+        #print(trfreq.shape)
+        
         return trfreq, trspec
 
     def stackfilter(self, time, trace_ref, trace_filt, window):
@@ -379,6 +410,9 @@ class CSV_log:
         rcParams.update({'font.size': 9})
 
         logging.info('Making noise plot...')
+        for i, tr in enumerate(traces):
+            tr.init_noise()
+
         fig = plt.figure('Noise plot: Log number: ' + self.headdict['logNum']+'          '+self.file , figsize=(16, 8))
         ### gridspec devides window into 25 horizontal, 31 vertical fields
         gs1 = GridSpec(25, 3 * 10+2, wspace=0.6, hspace=0.7, left=0.04, right=1., bottom=0.05, top=0.97)
@@ -539,6 +573,8 @@ class CSV_log:
                 plt.setp(ax3.get_xticklabels(), visible=False)
             else:
                 ax3.set_xlabel('frequency in hz')
+                
+            tr.clean_noise()
 
         meanfreq = 1./(traces[0].time[1]-traces[0].time[0])
         ax4 = plt.subplot(gs1[12, -1])
@@ -580,6 +616,7 @@ class CSV_log:
         gs1 = GridSpec(24, 3 * 10, wspace=0.6, hspace=0.7, left=0.04, right=1., bottom=0.05, top=0.97)
 
         for i, tr in enumerate(traces):
+            tr.init_resp()
             ax0 = plt.subplot(gs1[0:6, i*10:i*10+9])
             plt.title(tr.name)
             plt.plot(tr.time, tr.gyro, label=tr.name + ' gyro')
@@ -654,6 +691,8 @@ class CSV_log:
             plt.xlabel('response time in s')
 
             plt.grid()
+            
+            tr.clean_resp()
 
         meanfreq = 1./(traces[0].time[1]-traces[0].time[0])
         ax4 = plt.subplot(gs1[12, -1])
