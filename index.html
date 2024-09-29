@@ -28,7 +28,6 @@
   <body>
     <textarea id="code" style="width: 100%; display:none;" rows="36" ></textarea>
     <button style="display:none;" onclick="evaluatePython()">Run</button>
-    <div>Log:</div>
     <textarea id="output" style="width: 100%; " rows="10" disabled></textarea>
 
     <script>
@@ -119,6 +118,11 @@
           addToOutput(err);
         }
       }*/
+	  
+	  function sleep(delay) {
+		  return new Promise(resolve => setTimeout(resolve, delay));
+		}
+
 
 	  async function evaluatePython(pheaders,pcsv) {
 	    let pyodide = await pyodideReadyPromise;
@@ -130,13 +134,12 @@
 		}catch(e){
 			console.log(e);
 		}
-        try {
-		  output.value += ("Generating. window will freeze. Please wait.\n");
+        try {		  
 		  let pys='dowork()';//code.value
-          let rst = pyodide.runPython(pys);
+		  let rst = pyodide.runPython(pys);
 		  console.log(rst);
-          //addToOutput(rst);
-		  output.value += ("Done.\n");
+		  //addToOutput(rst);
+		  output.value += ("Done.\n");		  
         } catch (err) {
           output.value += (err);
         }
@@ -254,7 +257,7 @@ function loadLogFile(file) {
 	}
 	
 	
-	function dowork(){
+	async function dowork(){
 		if(!flightLog){
 			return;
 		}
@@ -262,13 +265,23 @@ function loadLogFile(file) {
 		if(isNaN(index)){
 			index=0;
 		}
-		try {		
+		
+	    output.value += ("Generating. window will freeze. Please wait.\n");
+		$('#genbtn').attr("disabled","disabled");
+		$('#genbtn').text("Waiting...");
+		await sleep(30);
+		  
+		try {
 			flightLog.openLog(index);
 			doCsv();
 		} catch (err) {
 			alert("Sorry, an error occurred while trying to open this log:\n\n" + err);
 			//return;
 			throw e;
+		}finally{
+			$('#genbtn').text("Gen");		  
+			$('#genbtn').removeAttr("disabled");
+			output.scrollTop = output.scrollHeight;
 		}
 	}
 	
